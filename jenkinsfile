@@ -1,0 +1,96 @@
+pipeline {
+    agent none
+    stages {
+      stage ('QA') {
+        parallel {
+          stage('test') {
+            agent {
+              docker {
+                image 'alxibra/apigateway:0.0.1'
+                label 'slave'
+              }
+            }
+            environment {
+                DATABASE_NAME_TEST = credentials('DATABASE_NAME_TEST')
+                DATABASE_USERNAME_TEST = credentials('DATABASE_USERNAME_TEST')
+                DATABASE_PASSWORD_TEST = credentials('DATABASE_PASSWORD_TEST')
+                DATABASE_PORT_TEST = credentials('DATABASE_PORT_TEST')
+                DATABASE_HOST_TEST = credentials('DATABASE_HOST_TEST')
+                LAZADA_CLIENT_SECRET = credentials('LAZADA_CLIENT_SECRET')
+                DISABLE_RATE_LIMIT = 'true'
+
+            }
+            when {
+              not {
+                branch 'master'
+              }
+            }
+            steps {
+                sh 'bundle exec rspec'
+            }
+          }
+          stage('linter') {
+            agent {
+              docker {
+                image 'alxibra/apigateway:0.0.1'
+                label 'slave'
+              }
+            }
+            when {
+              not {
+                branch 'master'
+              }
+            }
+            steps {
+                sh 'rubocop --cache false'
+            }
+          }
+        }
+      }
+      stage('build image') {
+        agent { label "slave" }
+        when {
+            branch 'master'
+        }
+        environment {
+          AWS_KEY = credentials('AWS_KEY')
+          AWS_SECRET = credentials('AWS_SECRET')
+          AWS_REGION = credentials('AWS_REGION')
+        }
+        steps {
+          withCredentials([file(credentialsId: 'APIGATEWAY_MASTER_KEY', variable: 'master_key')]) {
+            sh 'sudo cp /$master_key config/master.key'
+            sh 'bin/build'
+          }
+        }
+    }
+
+    stage('deploy to production') {
+      agent { label "master" }
+      when {
+        branch 'master'
+      }
+      environment {
+        AWS_KEY = credentials('AWS_KEY')
+        AWS_SECRET = credentials('AWS_SECRET')
+        AWS_REGION = credentials('AWS_REGION')
+      }
+      steps {
+        withCredentials([file(credentialsId: 'APIGATEWAY_MASTER_KEY', variable: 'master_key')]) {
+          sh 'sudo cp /$master_key config/master.key'
+          sh 'bin/production'
+        }
+      }
+      post {
+        success {
+          slackSend message: "${env.JOB_NAME} is success, info: ${env.BUILD_URL}",
+                    color: 'good'
+        }
+        failure {
+          slackSend message: "${env.JOB_NAME} fails, info: ${env.BUILD_URL}",
+                    color: 'danger'
+        }
+      }
+    }
+  }
+}
